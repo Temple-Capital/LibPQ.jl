@@ -58,28 +58,13 @@ jobs:
             arch: aarch64
             postgresql-version: '13'
             macos-postgresql-path: /opt/homebrew/var/postgresql
-          - os: macOS-13
-            version: 1
-            arch: x64
-            postgresql-version: '13'
-            macos-postgresql-path: /usr/local/var/postgresql
     steps:
-      - uses: actions/checkout@v2
-      - uses: julia-actions/setup-julia@v1
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
         with:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
-      - uses: actions/cache@v2
-        env:
-          cache-name: cache-artifacts
-        with:
-          path: ~/.julia/artifacts
-          key: ${{ runner.os }}-${{ matrix.arch }}-test-${{ env.cache-name }}-${{ hashFiles('**/Project.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ matrix.arch }}-test-${{ env.cache-name }}-
-            ${{ runner.os }}-${{ matrix.arch }}-test-
-            ${{ runner.os }}-${{ matrix.arch }}-
-            ${{ runner.os }}-
+      - uses: julia-actions/cache@v3
       # Linux
       - name: Install PostgreSQL
         uses: harmon758/postgresql-action@v1
@@ -89,12 +74,10 @@ jobs:
           postgresql user: ${{ env.PGUSER }}
           postgresql password: ${{ env.PGPASSWORD }}
       - name: Wait / Sleep
-        uses: jakejarvis/wait-action@v0.1.0
+        run: sleep 60
         if: ${{ runner.os == 'Linux' }}
-        with:
-          time: '1m'
       - name: Collect Docker Logs
-        uses: jwalton/gh-docker-logs@v1.0.0
+        uses: jwalton/gh-docker-logs@v2
         if: ${{ runner.os == 'Linux' }}
       - name: Check running containers
         run: docker ps -a
@@ -130,19 +113,19 @@ jobs:
         if: ${{ runner.os == 'Windows' }}
       # Run Tests
       - run: psql -c '\conninfo'
-      - uses: julia-actions/julia-buildpkg@latest
-      - uses: julia-actions/julia-runtest@latest
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-runtest@v1
       - uses: julia-actions/julia-processcoverage@v1
-      - uses: codecov/codecov-action@v1
+      - uses: codecov/codecov-action@v7
         with:
-          file: lcov.info
+          files: lcov.info
 
   docs:
     name: Documentation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      - uses: julia-actions/setup-julia@v1
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
         with:
           version: '1'
       - name: Setup documentation dependencies
@@ -155,11 +138,9 @@ jobs:
           postgresql user: ${{ env.PGUSER }}
           postgresql password: ${{ env.PGPASSWORD }}
       - name: Wait / Sleep
-        uses: jakejarvis/wait-action@v0.1.0
-        with:
-          time: '1m'
+        run: sleep 60
       - name: Collect Docker Logs
-        uses: jwalton/gh-docker-logs@v1.0.0
+        uses: jwalton/gh-docker-logs@v2
       - name: Check running containers
         run: docker ps -a
       - name: Set PGHOST
@@ -178,8 +159,8 @@ jobs:
     name: Error Codes
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      - uses: julia-actions/setup-julia@v1
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
         with:
           version: '1'
       - name: Install Julia packages
