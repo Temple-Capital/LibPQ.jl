@@ -19,7 +19,7 @@ end
 
 function LibPQ.pqparse(
     ::Type{InfExtendedTime{T}}, ptr::Ptr{UInt8}
-) where T<:Dates.AbstractDateTime
+) where {T<:Dates.AbstractDateTime}
     microseconds = ntoh(unsafe_load(Ptr{Int64}(ptr)))
     if microseconds == typemax(Int64)
         return InfExtendedTime{T}(∞)
