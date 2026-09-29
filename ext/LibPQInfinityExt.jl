@@ -5,7 +5,9 @@ using Infinity: InfExtendedTime, isposinf, ∞
 using LibPQ: LibPQ, pqparse, string_parameter
 
 # InfExtendedTime support for Dates.TimeType
-function LibPQ.pqparse(::Type{InfExtendedTime{T}}, str::AbstractString) where T<:Dates.TimeType
+function LibPQ.pqparse(
+    ::Type{InfExtendedTime{T}}, str::AbstractString
+) where {T<:Dates.TimeType}
     if str == "infinity"
         return InfExtendedTime{T}(∞)
     elseif str == "-infinity"
