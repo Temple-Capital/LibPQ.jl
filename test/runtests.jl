@@ -7,16 +7,12 @@ using Decimals
 using Infinity
 using Intervals
 using IterTools: imap
-using Memento
-using Memento.TestUtils
 using OffsetArrays
 using SQLStrings
 using DBInterface
 using TimeZones
 using Tables
 using UTCDateTimes
-
-Memento.config!("critical")
 
 macro test_broken_on_windows(ex)
     if Sys.iswindows()
@@ -26,11 +22,16 @@ macro test_broken_on_windows(ex)
     end
 end
 
-macro test_nolog_on_windows(ex...)
-    if Sys.iswindows()
-        :(@test_nolog($(map(esc, ex)...)))
-    else
-        :(@test_log($(map(esc, ex)...)))
+# `ex` must throw an error containing `msg`, except on Windows where it must not
+macro test_nothrow_on_windows(msg, ex)
+    quote
+        err_msg = try
+            $(esc(ex))
+            ""
+        catch err
+            sprint(showerror, err)
+        end
+        @test occursin($(esc(msg)), err_msg) != Sys.iswindows()
     end
 end
 
@@ -597,29 +598,26 @@ end
                 end
 
                 withenv("PGTZ" => "") do
-                    @test_nolog_on_windows LibPQ.LOGGER "error" "invalid value for parameter" try
+                    @test_nothrow_on_windows "invalid value for parameter" begin
                         LibPQ.Connection(
                             "dbname=postgres user=$DATABASE_USER"; throw_error=true
                         )
-                    catch
                     end
 
-                    @test_nolog_on_windows LibPQ.LOGGER "error" "invalid value for parameter" try
+                    @test_nothrow_on_windows "invalid value for parameter" begin
                         LibPQ.Connection(
                             "dbname=postgres user=$DATABASE_USER";
                             options=Dict("TimeZone" => "America/Danmarkshavn"),
                             throw_error=true,
                         )
-                    catch
                     end
 
-                    @test_nolog_on_windows LibPQ.LOGGER "error" "invalid value for parameter" try
+                    @test_nothrow_on_windows "invalid value for parameter" begin
                         LibPQ.Connection(
                             "dbname=postgres user=$DATABASE_USER";
                             options=Dict("TimeZone" => ""),
                             throw_error=true,
                         )
-                    catch
                     end
                 end
             finally

@@ -159,8 +159,7 @@ function _verbose_error_message(jl_result::Result)
     )
 
     if msg_ptr == C_NULL
-        error(
-            LOGGER,
+        throw(
             Errors.JLResultError(
                 "libpq could not allocate memory for the result error message"
             ),
@@ -235,16 +234,16 @@ function handle_result(jl_result::Result; throw_error::Bool=true)
 
         if throw_error
             close(jl_result)
-            error(LOGGER, err)
+            throw(err)
         else
-            warn(LOGGER, err)
+            @warn sprint(showerror, err)
         end
     else
         if result_status == libpq_c.PGRES_NONFATAL_ERROR
-            warn(LOGGER, Errors.PQResultError(jl_result))
+            @warn sprint(showerror, Errors.PQResultError(jl_result))
         end
 
-        debug(LOGGER, unsafe_string(libpq_c.PQcmdStatus(jl_result.result)))
+        @debug unsafe_string(libpq_c.PQcmdStatus(jl_result.result))
     end
 
     return jl_result

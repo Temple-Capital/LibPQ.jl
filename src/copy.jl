@@ -42,7 +42,7 @@ function execute(
     throw_error=true,
     kwargs...,
 )
-    level = throw_error ? error : warn
+    level = throw_error ? throw : err -> @warn(sprint(showerror, err))
     if parameters !== nothing
         string_params = string_parameters(parameters)
         pointer_params = parameter_pointers(string_params)
@@ -60,7 +60,7 @@ function execute(
 
         if result_status != libpq_c.PGRES_COPY_IN
             if !(result_status in (libpq_c.PGRES_BAD_RESPONSE, libpq_c.PGRES_FATAL_ERROR))
-                level(LOGGER, Errors.JLResultError(
+                level(Errors.JLResultError(
                     "Expected PGRES_COPY_IN after COPY query, got $result_status"
                 ))
             end
@@ -73,7 +73,7 @@ function execute(
 
         status_code = put_copy_end(jl_conn)
         if status_code == -1
-            level(LOGGER, Errors.PQConnectionError(jl_conn))
+            level(Errors.PQConnectionError(jl_conn))
         end
 
         libpq_c.PQgetResult(jl_conn.conn)
