@@ -41,7 +41,7 @@ function LibPQ.pqparse(::Type{InfExtendedTime{T}}, ptr::Ptr{UInt8}) where {T<:Da
     return InfExtendedTime{T}(pqparse(T, ptr))
 end
 
-function LibPQ.string_parameter(parameter::InfExtendedTime{T}) where T<:Dates.TimeType
+function LibPQ.string_parameter(parameter::InfExtendedTime{T}) where {T<:Dates.TimeType}
     if isinf(parameter)
         return isposinf(parameter) ? "infinity" : "-infinity"
     else
