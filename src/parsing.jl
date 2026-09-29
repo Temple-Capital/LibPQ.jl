@@ -331,17 +331,6 @@ function pqparse(::Type{Time}, str::AbstractString)
     end
 end
 
-# InfExtendedTime support for Dates.TimeType
-function pqparse(::Type{InfExtendedTime{T}}, str::AbstractString) where T<:Dates.TimeType
-    if str == "infinity"
-        return InfExtendedTime{T}(∞)
-    elseif str == "-infinity"
-        return InfExtendedTime{T}(-∞)
-    end
-
-    return InfExtendedTime{T}(pqparse(T, str))
-end
-
 # UNIX timestamps
 function Base.parse(::Type{DateTime}, pqv::PQValue{PQ_SYSTEM_TYPES[:int8]})
     return unix2datetime(parse(Int64, pqv))
@@ -401,30 +390,6 @@ function pqparse(::Type{Date}, ptr::Ptr{UInt8})
         return typemin(Date)
     end
     return POSTGRES_EPOCH_DATE + Day(value)
-end
-
-function pqparse(
-    ::Type{InfExtendedTime{T}}, ptr::Ptr{UInt8}
-) where T<:Dates.AbstractDateTime
-    microseconds = ntoh(unsafe_load(Ptr{Int64}(ptr)))
-    if microseconds == typemax(Int64)
-        return InfExtendedTime{T}(∞)
-    elseif microseconds == typemin(Int64)
-        return InfExtendedTime{T}(-∞)
-    end
-
-    return InfExtendedTime{T}(pqparse(T, ptr))
-end
-
-function pqparse(::Type{InfExtendedTime{T}}, ptr::Ptr{UInt8}) where T<:Date
-    microseconds = ntoh(unsafe_load(Ptr{Int32}(ptr)))
-    if microseconds == typemax(Int32)
-        return InfExtendedTime{T}(∞)
-    elseif microseconds == typemin(Int32)
-        return InfExtendedTime{T}(-∞)
-    end
-
-    return InfExtendedTime{T}(pqparse(T, ptr))
 end
 
 function generate_binary_date_parser(symbol)

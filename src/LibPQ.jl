@@ -20,7 +20,6 @@ using DocStringExtensions
 using Decimals
 using FileWatching
 using Tables
-using Infinity: InfExtendedTime, isposinf, ∞
 using Intervals
 using IterTools: imap
 using LayerDicts
