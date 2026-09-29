@@ -56,7 +56,7 @@ jobs:
           - os: macOS-latest
             version: 1
             arch: aarch64
-            postgresql-version: '13'
+            postgresql-version: '17'
             macos-postgresql-path: /opt/homebrew/var/postgresql
     steps:
       - uses: actions/checkout@v7
