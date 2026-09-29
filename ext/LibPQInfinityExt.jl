@@ -30,7 +30,7 @@ function LibPQ.pqparse(
     return InfExtendedTime{T}(pqparse(T, ptr))
 end
 
-function LibPQ.pqparse(::Type{InfExtendedTime{T}}, ptr::Ptr{UInt8}) where T<:Date
+function LibPQ.pqparse(::Type{InfExtendedTime{T}}, ptr::Ptr{UInt8}) where {T<:Date}
     microseconds = ntoh(unsafe_load(Ptr{Int32}(ptr)))
     if microseconds == typemax(Int32)
         return InfExtendedTime{T}(∞)
