@@ -7,12 +7,16 @@ using Decimals
 using Infinity
 using Intervals
 using IterTools: imap
+using Logging
 using OffsetArrays
 using SQLStrings
 using DBInterface
 using TimeZones
 using Tables
 using UTCDateTimes
+
+# Silence LibPQ logs; `@test_logs` still sees them
+global_logger(NullLogger())
 
 macro test_broken_on_windows(ex)
     if Sys.iswindows()
@@ -526,7 +530,9 @@ end
             close(conn)
 
             # ERROR: missing "=" after "barf" in connection info string
-            @test_throws LibPQ.Errors.ConninfoParseError LibPQ.conninfo("wrong")
+            @test_logs (:error, r"missing \"=\" after \"wrong\"") @test_throws(
+                LibPQ.Errors.ConninfoParseError, LibPQ.conninfo("wrong")
+            )
         end
 
         @testset "Time Zone" begin

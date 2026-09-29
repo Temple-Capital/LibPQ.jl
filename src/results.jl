@@ -159,7 +159,7 @@ function _verbose_error_message(jl_result::Result)
     )
 
     if msg_ptr == C_NULL
-        throw(
+        @logthrow(
             Errors.JLResultError(
                 "libpq could not allocate memory for the result error message"
             ),
@@ -234,7 +234,7 @@ function handle_result(jl_result::Result; throw_error::Bool=true)
 
         if throw_error
             close(jl_result)
-            throw(err)
+            @logthrow(err)
         else
             @warn sprint(showerror, err)
         end

@@ -73,7 +73,7 @@ function handle_result(
     if throw_error && !isempty(errors)
         throw(CompositeException(errors))
     elseif result === nothing
-        throw(Errors.JLResultError("Async query did not return result"))
+        @logthrow(Errors.JLResultError("Async query did not return result"))
     else
         return result
     end
@@ -85,7 +85,7 @@ function _consume(jl_conn::Connection)
     # https://github.com/postgres/postgres/blob/master/src/interfaces/libpq/fe-exec.c#L1266
     # if we used non-blocking connections we would need to check for `1` as well
     if libpq_c.PQflush(jl_conn.conn) < 0
-        throw(Errors.PQConnectionError(jl_conn))
+        @logthrow(Errors.PQConnectionError(jl_conn))
     end
 
     async_result = jl_conn.async_result
@@ -110,7 +110,7 @@ function _consume(jl_conn::Connection)
             last_log == curr &&
                 @debug "Consuming input from connection $(jl_conn.conn)"
             success = libpq_c.PQconsumeInput(jl_conn.conn) == 1
-            !success && throw(Errors.PQConnectionError(jl_conn))
+            !success && @logthrow(Errors.PQConnectionError(jl_conn))
 
             while libpq_c.PQisBusy(jl_conn.conn) == 0
                 @debug "Checking the result from connection $(jl_conn.conn)"
@@ -130,7 +130,7 @@ function _consume(jl_conn::Connection)
     catch err
         if err isa Base.IOError && err.code == -9  # EBADF
             @debug sprint(showerror, err)
-            throw(
+            @logthrow(
                 Errors.JLConnectionError(
                     "PostgreSQL connection socket was unexpectedly closed"
                 ),
@@ -274,7 +274,7 @@ function _async_execute(
             # error if submission fails
             # does not respect `throw_error` as there's no result to return on this error
             if !submission_fn(jl_conn)
-                throw(Errors.PQConnectionError(async_result.jl_conn))
+                @logthrow(Errors.PQConnectionError(async_result.jl_conn))
             end
 
             return handle_result(async_result; throw_error=throw_error)::Result

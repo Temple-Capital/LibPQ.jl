@@ -124,7 +124,7 @@ function handle_new_connection(jl_conn::Connection; throw_error::Bool=true)
 
         if throw_error
             close(jl_conn)
-            throw(err)
+            @logthrow(err)
         else
             @warn sprint(showerror, err)
         end
@@ -458,7 +458,7 @@ function encoding(jl_conn::Connection)
     encoding_id::Cint = libpq_c.PQclientEncoding(jl_conn.conn)
 
     if encoding_id == -1
-        throw(Errors.JLConnectionError(
+        @logthrow(Errors.JLConnectionError(
             "libpq could not retrieve the connection's client encoding. " *
             "Something is wrong with the connection."
         ))
@@ -485,7 +485,7 @@ function set_encoding!(jl_conn::Connection, encoding::String)
         status = libpq_c.PQsetClientEncoding(jl_conn.conn, encoding)
 
         if status == -1
-            throw(Errors.JLConnectionError(
+            @logthrow(Errors.JLConnectionError(
                 "libpq could not set the connection's client encoding to $encoding"
             ))
         else
@@ -599,7 +599,7 @@ function reset!(jl_conn::Connection; throw_error::Bool=true)
 
         handle_new_connection(jl_conn; throw_error=throw_error)
     else
-        throw(Errors.JLConnectionError(
+        @logthrow(Errors.JLConnectionError(
             "Cannot reset a connection that has been closed"
         ))
     end
@@ -639,7 +639,7 @@ function Base.parse(::Type{ConninfoDisplay}, str::AbstractString)::ConninfoDispl
     elseif first(str) == 'D'
         Debug
     else
-        throw(Errors.JLConnectionError(
+        @logthrow(Errors.JLConnectionError(
             "Unexpected dispchar '$str' in PQconninfoOption"
         ))
     end
@@ -696,11 +696,11 @@ function conninfo(jl_conn::Connection)
 
     if ci_ptr == C_NULL
         if !isopen(jl_conn)
-            throw(Errors.JLConnectionError(
+            @logthrow(Errors.JLConnectionError(
                 "Cannot get connection info as the connection is closed."
             ))
         else
-            throw(Errors.JLConnectionError(
+            @logthrow(Errors.JLConnectionError(
                 "libpq could not allocate memory for connection info"
             ))
         end
@@ -738,7 +738,7 @@ function conninfo(str::AbstractString)
     ci_ptr = libpq_c.PQconninfoParse(str, err_ref)
 
     if ci_ptr == C_NULL && err_ref[] == C_NULL
-        throw(Errors.JLConnectionError(
+        @logthrow(Errors.JLConnectionError(
             "libpq could not allocate memory for connection info"
         ))
     end
@@ -746,7 +746,7 @@ function conninfo(str::AbstractString)
     if err_ref[] != C_NULL
         err_msg = unsafe_string(err_ref[])
         libpq_c.PQfreemem(err_ref[])
-        throw(Errors.ConninfoParseError(err_msg))
+        @logthrow(Errors.ConninfoParseError(err_msg))
     end
 
     ci_array = conninfo(ci_ptr)

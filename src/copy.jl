@@ -42,7 +42,7 @@ function execute(
     throw_error=true,
     kwargs...,
 )
-    level = throw_error ? throw : err -> @warn(sprint(showerror, err))
+    level(err) = throw_error ? @logthrow(err) : @warn(sprint(showerror, err))
     if parameters !== nothing
         string_params = string_parameters(parameters)
         pointer_params = parameter_pointers(string_params)
