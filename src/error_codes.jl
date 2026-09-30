@@ -16,6 +16,7 @@
     C0L,
     C0P,
     C0Z,
+    C10,
     C20,
     C21,
     C22,
@@ -42,11 +43,11 @@
     C55,
     C57,
     C58,
-    C72,
     CF0,
     CHV,
     CP0,
     CXX,
+    C72,
     CUN,
 )
 
@@ -83,6 +84,7 @@
     E0P000,
     E0Z000,
     E0Z002,
+    E10608,
     E20000,
     E21000,
     E22000,
@@ -173,6 +175,7 @@
     E25P01,
     E25P02,
     E25P03,
+    E25P04,
     E26000,
     E27000,
     E28000,
@@ -276,7 +279,7 @@
     E58030,
     E58P01,
     E58P02,
-    E72000,
+    E58P03,
     EF0000,
     EF0001,
     EHV000,
@@ -314,6 +317,7 @@
     EXX000,
     EXX001,
     EXX002,
+    E72000,
     EUNOWN,
 )
 
@@ -393,6 +397,7 @@ const DiagnosticsExceptionErrorClass = PQResultError{C0Z}
 
 const DiagnosticsException = PQResultError{C0Z,E0Z000}
 const StackedDiagnosticsAccessedWithoutActiveHandler = PQResultError{C0Z,E0Z002}
+const InvalidArgumentForXquery = PQResultError{C10,E10608}
 
 # CaseNotFound
 const CaseNotFoundErrorClass = PQResultError{C20}
@@ -507,6 +512,7 @@ const SchemaAndDataStatementMixingNotSupported = PQResultError{C25,E25007}
 const NoActiveSqlTransaction = PQResultError{C25,E25P01}
 const InFailedSqlTransaction = PQResultError{C25,E25P02}
 const IdleInTransactionSessionTimeout = PQResultError{C25,E25P03}
+const TransactionTimeout = PQResultError{C25,E25P04}
 
 # InvalidSqlStatementName
 const InvalidSqlStatementNameErrorClass = PQResultError{C26}
@@ -690,11 +696,7 @@ const SystemError = PQResultError{C58,E58000}
 const IoError = PQResultError{C58,E58030}
 const UndefinedFile = PQResultError{C58,E58P01}
 const DuplicateFile = PQResultError{C58,E58P02}
-
-# SnapshotTooOld
-const SnapshotTooOldErrorClass = PQResultError{C72}
-
-const SnapshotTooOld = PQResultError{C72,E72000}
+const FileNameTooLong = PQResultError{C58,E58P03}
 
 # ConfigFileError
 const ConfigFileErrorErrorClass = PQResultError{CF0}
@@ -749,6 +751,11 @@ const InternalError = PQResultError{CXX,EXX000}
 const DataCorrupted = PQResultError{CXX,EXX001}
 const IndexCorrupted = PQResultError{CXX,EXX002}
 
+# SnapshotTooOld
+const SnapshotTooOldErrorClass = PQResultError{C72}
+
+const SnapshotTooOld = PQResultError{C72,E72000}
+
 # Unknown Error
 const UnknownErrorClass = PQResultError{CUN}
 
@@ -784,6 +791,7 @@ const ERROR_NAMES = Dict(
     InvalidRoleSpecification => "InvalidRoleSpecification",
     DiagnosticsException => "DiagnosticsException",
     StackedDiagnosticsAccessedWithoutActiveHandler => "StackedDiagnosticsAccessedWithoutActiveHandler",
+    InvalidArgumentForXquery => "InvalidArgumentForXquery",
     CaseNotFound => "CaseNotFound",
     CardinalityViolation => "CardinalityViolation",
     DataException => "DataException",
@@ -874,6 +882,7 @@ const ERROR_NAMES = Dict(
     NoActiveSqlTransaction => "NoActiveSqlTransaction",
     InFailedSqlTransaction => "InFailedSqlTransaction",
     IdleInTransactionSessionTimeout => "IdleInTransactionSessionTimeout",
+    TransactionTimeout => "TransactionTimeout",
     InvalidSqlStatementName => "InvalidSqlStatementName",
     TriggeredDataChangeViolation => "TriggeredDataChangeViolation",
     InvalidAuthorizationSpecification => "InvalidAuthorizationSpecification",
@@ -977,7 +986,7 @@ const ERROR_NAMES = Dict(
     IoError => "IoError",
     UndefinedFile => "UndefinedFile",
     DuplicateFile => "DuplicateFile",
-    SnapshotTooOld => "SnapshotTooOld",
+    FileNameTooLong => "FileNameTooLong",
     ConfigFileError => "ConfigFileError",
     LockFileExists => "LockFileExists",
     FdwError => "FdwError",
@@ -1015,5 +1024,6 @@ const ERROR_NAMES = Dict(
     InternalError => "InternalError",
     DataCorrupted => "DataCorrupted",
     IndexCorrupted => "IndexCorrupted",
+    SnapshotTooOld => "SnapshotTooOld",
     UnknownError => "UnknownError",
 )

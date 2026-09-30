@@ -16,6 +16,10 @@ const SUCCESS_CLASS = "C00"
 const WARNING_CLASSES = ("C01", "C02")
 const EXTERNAL_CLASSES = ("C38", "C39")
 
+# codes removed from the current docs but still sent by older supported servers
+const LEGACY_CODES = [("72000", "snapshot_too_old"),  # removed in PostgreSQL 17
+]
+
 pascalcase(str) = replace(titlecase(str), '_' => "")
 
 error_code_html(url=ERROR_CODE_APPENDIX) = String(HTTP.get(url).body)
@@ -32,6 +36,7 @@ function generate_error_codes(io, html=error_code_html())
     table = error_code_table(html)
     rows = findall("tbody/tr/td/code/../..", table)
     id_names = Set{String}()
+    classes = Set{String}()
 
     class_enum_io = IOBuffer()
     println(class_enum_io, "@cenum(\n    # Enum type\n    Class,\n    # Enum values")
@@ -41,17 +46,20 @@ function generate_error_codes(io, html=error_code_html())
     error_names_io = IOBuffer()
     println(error_names_io, "const ERROR_NAMES = Dict(")
 
-    for row in rows
-        code, name = parse_row(row)
-
+    for (code, name) in [map(parse_row, rows); LEGACY_CODES]
         id_name = pascalcase(name)
         class = "C$(code[1:2])"
         error_code = "E$code"
 
+        # some classes (e.g. 10) have no XX000 code, so add the class on first sight
+        if !(class in classes)
+            push!(classes, class)
+            println(class_enum_io, "    $class,")
+        end
+
         if endswith(code, "000")
             suffix = class in (SUCCESS_CLASS, WARNING_CLASSES...) ? "Class" : "ErrorClass"
 
-            println(class_enum_io, "    $class,")
             println(
                 alias_io,
                 "\n# $id_name\nconst $(id_name)$(suffix) = PQResultError{$class}\n",
