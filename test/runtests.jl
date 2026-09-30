@@ -1688,7 +1688,7 @@ end
                 # Skipped: allocation counts vary across Julia versions and fail on CI.
                 foo(col) = [col[1] for _ in 1:100]
                 max_expected_allocs = num_allocs * 100 + 5
-                @test count_allocs(foo, col) < max_expected_allocs skip = true
+                @test_skip count_allocs(foo, col) < max_expected_allocs
 
                 close(result)
                 close(conn)
