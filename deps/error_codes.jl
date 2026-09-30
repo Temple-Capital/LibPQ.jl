@@ -16,10 +16,9 @@ const SUCCESS_CLASS = "C00"
 const WARNING_CLASSES = ("C01", "C02")
 const EXTERNAL_CLASSES = ("C38", "C39")
 
-
 pascalcase(str) = replace(titlecase(str), '_' => "")
 
-error_code_html(url=ERROR_CODE_APPENDIX) = String(HTTP.get(url))
+error_code_html(url=ERROR_CODE_APPENDIX) = String(HTTP.get(url).body)
 
 function error_code_table(html)
     parsed = parsehtml(html)
