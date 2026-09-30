@@ -52,8 +52,12 @@ The `Class` parameter is the first two characters of that code, also listed on t
 For a list of all error aliases, see `src/error_codes.jl`, which was generated using the
 PostgreSQL documentation linked above.
 
-```jldoctest
+```jldoctest; filter = r"└ @ LibPQ .*"
 julia> try execute(conn, "SELORCT NUUL;") catch err println(err) end
+┌ Error: SyntaxError: ERROR:  syntax error at or near "SELORCT"
+│ LINE 1: SELORCT NUUL;
+│         ^
+└ @ LibPQ ~/.julia/packages/LibPQ/src/results.jl:237
 LibPQ.Errors.SyntaxError("ERROR:  syntax error at or near \\"SELORCT\\"\\nLINE 1: SELORCT NUUL;\\n        ^\\n")
 
 julia> LibPQ.Errors.SyntaxError
