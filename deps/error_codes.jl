@@ -32,6 +32,7 @@ function generate_error_codes(io, html=error_code_html())
     table = error_code_table(html)
     rows = findall("tbody/tr/td/code/../..", table)
     id_names = Set{String}()
+    classes = Set{String}()
 
     class_enum_io = IOBuffer()
     println(class_enum_io, "@cenum(\n    # Enum type\n    Class,\n    # Enum values")
@@ -48,10 +49,15 @@ function generate_error_codes(io, html=error_code_html())
         class = "C$(code[1:2])"
         error_code = "E$code"
 
+        # some classes (e.g. 10) have no XX000 code, so add the class on first sight
+        if !(class in classes)
+            push!(classes, class)
+            println(class_enum_io, "    $class,")
+        end
+
         if endswith(code, "000")
             suffix = class in (SUCCESS_CLASS, WARNING_CLASSES...) ? "Class" : "ErrorClass"
 
-            println(class_enum_io, "    $class,")
             println(
                 alias_io,
                 "\n# $id_name\nconst $(id_name)$(suffix) = PQResultError{$class}\n",
