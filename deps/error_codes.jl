@@ -47,7 +47,6 @@ function generate_error_codes(io, html=error_code_html())
     println(error_names_io, "const ERROR_NAMES = Dict(")
 
     for (code, name) in [map(parse_row, rows); LEGACY_CODES]
-
         id_name = pascalcase(name)
         class = "C$(code[1:2])"
         error_code = "E$code"
