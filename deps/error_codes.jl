@@ -17,8 +17,7 @@ const WARNING_CLASSES = ("C01", "C02")
 const EXTERNAL_CLASSES = ("C38", "C39")
 
 # codes removed from the current docs but still sent by older supported servers
-const LEGACY_CODES = [
-    ("72000", "snapshot_too_old"),  # removed in PostgreSQL 17
+const LEGACY_CODES = [("72000", "snapshot_too_old"),  # removed in PostgreSQL 17
 ]
 
 pascalcase(str) = replace(titlecase(str), '_' => "")
