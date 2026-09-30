@@ -1047,6 +1047,12 @@ end
                 show(io, MIME"text/plain"(), code)
             end == "E2201E::LibPQ.Errors.ErrorCode"
 
+            # code removed from the current PostgreSQL docs, kept for older servers
+            raise(code) = execute(conn, "DO \$\$ BEGIN RAISE EXCEPTION USING ERRCODE = '$code'; END \$\$;")
+            @test_throws LibPQ.Errors.SnapshotTooOld raise("72000")
+            # code unknown to LibPQ
+            @test_throws LibPQ.Errors.UnknownError raise("ZZ999")
+
             result = execute(conn, "SELECT log(-1);"; throw_error=false)
             err = LibPQ.Errors.PQResultError(result; verbose=false)
             verbose_err = LibPQ.Errors.PQResultError(result; verbose=true)

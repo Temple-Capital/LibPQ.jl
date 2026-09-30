@@ -47,6 +47,7 @@
     CHV,
     CP0,
     CXX,
+    C72,
     CUN,
 )
 
@@ -316,6 +317,7 @@
     EXX000,
     EXX001,
     EXX002,
+    E72000,
     EUNOWN,
 )
 
@@ -749,6 +751,11 @@ const InternalError = PQResultError{CXX,EXX000}
 const DataCorrupted = PQResultError{CXX,EXX001}
 const IndexCorrupted = PQResultError{CXX,EXX002}
 
+# SnapshotTooOld
+const SnapshotTooOldErrorClass = PQResultError{C72}
+
+const SnapshotTooOld = PQResultError{C72,E72000}
+
 # Unknown Error
 const UnknownErrorClass = PQResultError{CUN}
 
@@ -1017,5 +1024,6 @@ const ERROR_NAMES = Dict(
     InternalError => "InternalError",
     DataCorrupted => "DataCorrupted",
     IndexCorrupted => "IndexCorrupted",
+    SnapshotTooOld => "SnapshotTooOld",
     UnknownError => "UnknownError",
 )
