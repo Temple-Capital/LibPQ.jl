@@ -111,6 +111,21 @@ Base.convert(::Type{String}, pqv::PQValue) = String(pqv)
 Base.length(pqv::PQValue) = length(string_view(pqv))
 Base.lastindex(pqv::PQValue) = lastindex(string_view(pqv))
 
+# Older Julia parsers throw InexactError for submillisecond text instead of
+# returning nothing. Let the existing truncation fallback handle that precision.
+function _tryparse(::Type{T}, str, formats::Vararg{Any,N}) where {T,N}
+    @static if v"1.6.6" <= VERSION < v"1.7.0" || VERSION > v"1.7.2"
+        return tryparse(T, str, formats...)
+    else
+        try
+            return tryparse(T, str, formats...)
+        catch err
+            err isa InexactError || rethrow()
+        end
+        return nothing
+    end
+end
+
 # Fallback, because Base requires string iteration state to be indices into the string.
 # In an ideal world, PQValue would be an AbstractString and this particular method would
 # not be necessary.
@@ -173,6 +188,47 @@ generate_binary_parser(:oid)
 ## numeric
 _DEFAULT_TYPE_MAP[:numeric] = Decimal
 
+# Binary NUMERIC uses base-10000 digits and a separate decimal scale. Reconstruct
+# PostgreSQL's text representation to reuse the existing target-type parsers.
+function Base.parse(
+    ::Type{T}, pqv::PQBinaryValue{PQ_SYSTEM_TYPES[:numeric]}
+) where {T<:Number}
+    GC.@preserve pqv begin
+        byte_count = num_bytes(pqv)
+        byte_count >= 8 || throw(ArgumentError("invalid binary NUMERIC header"))
+        input = IOBuffer(bytes_view(pqv))
+        digit_count = Int(ntoh(read(input, UInt16)))
+        weight = Int(ntoh(read(input, Int16)))
+        sign = ntoh(read(input, UInt16))
+        scale = Int(ntoh(read(input, UInt16)))
+        byte_count == 8 + 2 * digit_count ||
+            throw(ArgumentError("invalid binary NUMERIC digit count"))
+
+        sign == 0xc000 && return pqparse(T, "NaN")
+        sign == 0xd000 && return pqparse(T, "Infinity")
+        sign == 0xf000 && return pqparse(T, "-Infinity")
+        sign in (0x0000, 0x4000) || throw(ArgumentError("invalid binary NUMERIC sign"))
+        scale <= 0x3fff || throw(ArgumentError("invalid binary NUMERIC scale"))
+
+        digits = [ntoh(read(input, UInt16)) for _ in 1:digit_count]
+        all(d -> d < 10000, digits) || throw(ArgumentError("invalid binary NUMERIC digit"))
+        output = IOBuffer()
+        sign == 0x4000 && print(output, '-')
+        first_position = max(weight, 0)
+        for position in first_position:-1:(-cld(scale, 4))
+            index = weight - position + 1
+            digit = 1 <= index <= digit_count ? digits[index] : UInt16(0)
+            position == -1 && print(output, '.')
+            group = lpad(string(digit), position == first_position ? 1 : 4, '0')
+            if position < 0 && -4 * position > scale
+                group = group[1:mod1(scale, 4)]
+            end
+            print(output, group)
+        end
+        return pqparse(T, String(take!(output)))
+    end
+end
+
 # no default for monetary; needs lconv and lc_monetary from result/connection
 
 ## character
@@ -190,9 +246,15 @@ pqparse(::Type{Char}, str::AbstractString) = Char(pqparse(PQChar, str))
 
 _DEFAULT_TYPE_MAP[:bytea] = Vector{UInt8}
 
-# Needs it's own `parse` method as it uses bytes_view instead of string_view
+# Text bytea must be unescaped; binary bytea already contains the raw bytes.
 function Base.parse(::Type{Vector{UInt8}}, pqv::PQTextValue{PQ_SYSTEM_TYPES[:bytea]})
     return pqparse(Vector{UInt8}, bytes_view(pqv))
+end
+
+function Base.parse(::Type{Vector{UInt8}}, pqv::PQBinaryValue{PQ_SYSTEM_TYPES[:bytea]})
+    GC.@preserve pqv begin
+        return copy(unsafe_wrap(Vector{UInt8}, data_pointer(pqv), num_bytes(pqv)))
+    end
 end
 
 function pqparse(::Type{Vector{UInt8}}, bytes::Array{UInt8,1})
@@ -209,6 +271,19 @@ function pqparse(::Type{Vector{UInt8}}, bytes::Array{UInt8,1})
     libpq_c.PQfreemem(unescaped_ptr)
 
     return unescaped_vec
+end
+
+## uuid
+function Base.parse(::Type{UUID}, pqv::PQBinaryValue{PQ_SYSTEM_TYPES[:uuid]})
+    GC.@preserve pqv begin
+        return UUID(pqparse(UInt128, data_pointer(pqv)))
+    end
+end
+
+function pqparse(
+    ::Type{A}, str::AbstractString
+) where {T<:Union{UUID,Missing},A<:AbstractArray{T}}
+    return parse_numeric_array(T, str)::A
 end
 
 ## bool
@@ -259,7 +334,7 @@ function pqparse(::Type{DateTime}, str::AbstractString)
     parsed = _tryparse_datetime_inf(DateTime, str)
     isnothing(parsed) || return parsed
 
-    parsed = tryparse(DateTime, str, TIMESTAMP_FORMAT)
+    parsed = _tryparse(DateTime, str, TIMESTAMP_FORMAT)
     isnothing(parsed) || return parsed
 
     return parse(DateTime, _trunc_seconds(str), TIMESTAMP_FORMAT)
@@ -279,7 +354,7 @@ function pqparse(::Type{ZonedDateTime}, str::AbstractString)
     isnothing(parsed) || return parsed
 
     for fmt in TIMESTAMPTZ_FORMATS[1:(end - 1)]
-        parsed = tryparse(ZonedDateTime, str, fmt)
+        parsed = _tryparse(ZonedDateTime, str, fmt)
         isnothing(parsed) || return parsed
     end
 
@@ -294,7 +369,7 @@ function pqparse(::Type{UTCDateTime}, str::AbstractString)
     # which is the default
     str = replace(str, "+00" => "")
 
-    parsed = tryparse(UTCDateTime, str, TIMESTAMP_FORMAT)
+    parsed = _tryparse(UTCDateTime, str, TIMESTAMP_FORMAT)
     isnothing(parsed) || return parsed
 
     return parse(UTCDateTime, _trunc_seconds(str), TIMESTAMP_FORMAT)
@@ -315,20 +390,10 @@ end
 
 _DEFAULT_TYPE_MAP[:time] = Time
 function pqparse(::Type{Time}, str::AbstractString)
-    @static if v"1.6.6" <= VERSION < v"1.7.0" || VERSION > v"1.7.2"
-        result = tryparse(Time, str)
-        # If there's an error we want to see it here
-        return isnothing(result) ? parse(Time, _trunc_seconds(str)) : result
-    else
-        try
-            return parse(Time, str)
-        catch err
-            if !(err isa InexactError)
-                rethrow(err)
-            end
-        end
-        return parse(Time, _trunc_seconds(str))
-    end
+    parsed = _tryparse(Time, str)
+    isnothing(parsed) || return parsed
+
+    return parse(Time, _trunc_seconds(str))
 end
 
 # UNIX timestamps
@@ -514,6 +579,7 @@ function pqparse(::Type{Dates.CompoundPeriod}, str::AbstractString)
             period_type = frac_periods[period_coeff]  # field regex prevents BoundsError
 
             frac_seconds = parse(Int, frac_seconds_str) * 10^(3 * period_coeff - len)
+            startswith(whole_seconds_str, "-") && (frac_seconds = -frac_seconds)
             if frac_seconds != 0
                 push!(periods, period_type(frac_seconds))
             end
@@ -587,6 +653,49 @@ foreach(
 )
 
 ## arrays
+# PostgreSQL text output quotes elements containing array punctuation or whitespace
+# and escapes embedded double quotes and backslashes.
+const TEXT_ARRAY_ELEMENT = r"\"((?:[^\"\\]|\\.)*)\"|([^,{}\"\\]+)"s
+
+function pqparse(
+    ::Type{A}, str::AbstractString
+) where {A<:Union{AbstractArray{String},AbstractArray{Union{String,Missing}}}}
+    T = eltype(A)
+    eq_ind = startswith(str, "[") ? findfirst(isequal('='), str) : nothing
+    array_str = eq_ind === nothing ? str : SubString(str, nextind(str, eq_ind))
+    elements = collect(eachmatch(TEXT_ARRAY_ELEMENT, array_str))
+    shape = replace(array_str, TEXT_ARRAY_ELEMENT => "x")
+    if !startswith(shape, "{") ||
+        !endswith(shape, "}") ||
+        any(c -> c ∉ ('{', '}', ',', 'x'), shape)
+        throw(ArgumentError("invalid PostgreSQL text array: $str"))
+    end
+
+    if eq_ind === nothing
+        arr = Array{T}(undef, array_size(shape)...)
+    else
+        range_strs = split(str[1:(eq_ind - 1)], ['[', ']']; keepempty=false)
+        ranges = map(range_strs) do range_str
+            lower, upper = split(range_str, ':'; limit=2)
+            return parse(Int, lower):parse(Int, upper)
+        end
+        arr = OffsetArray{T}(undef, ranges...)
+    end
+    length(elements) == length(arr) ||
+        throw(ArgumentError("text array dimensions do not match its elements"))
+
+    idx_iter = imap(reverse, product(reverse(axes(arr))...))
+    for (idx, element) in zip(idx_iter, elements)
+        quoted, unquoted = element.captures
+        arr[idx...] = if quoted === nothing
+            unquoted == "NULL" ? missing : String(unquoted)
+        else
+            replace(quoted, r"\\(.)"s => s"\1")
+        end
+    end
+    return arr::A
+end
+
 # numeric arrays never have double quotes and always use ',' as a separator
 parse_numeric_element(::Type{T}, str) where T = parse(T, str)
 

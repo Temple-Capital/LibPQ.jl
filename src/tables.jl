@@ -5,6 +5,11 @@ Tables.istable(::Type{<:Result}) = true
 Tables.rowaccess(::Type{<:Result}) = true
 Tables.rows(jl_result::Result) = jl_result
 
+function Tables.rowtable(jl_result::Result)
+    num_columns(jl_result) == 0 && return fill(NamedTuple(), num_rows(jl_result))
+    return Tables.rowtable(Tables.columntable(jl_result))
+end
+
 Base.eltype(jl_result::Result) = Row
 Base.length(jl_result::Result) = num_rows(jl_result)
 
@@ -110,6 +115,7 @@ column_number(c::Column) = getfield(c, :col)
 column_name(c::Column) = getfield(c, :col_name)
 
 function Base.getindex(c::Column{T,oid,typ}, row::Integer)::T where {T,oid,typ}
+    @boundscheck checkbounds(c, row)
     jl_result = result(c)
     col = column_number(c)
     if isnull(jl_result, row, col)
