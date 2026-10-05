@@ -14,6 +14,7 @@ using DBInterface
 using TimeZones
 using Tables
 using UTCDateTimes
+using UUIDs: UUID
 
 # Silence LibPQ logs; `@test_logs` still sees them
 global_logger(NullLogger())
@@ -47,11 +48,41 @@ end
 
 @testset "LibPQ" begin
 
+include("datetime.jl")
+
 @testset "ConninfoDisplay" begin
     @test parse(LibPQ.ConninfoDisplay, "") == LibPQ.Normal
     @test parse(LibPQ.ConninfoDisplay, "*") == LibPQ.Password
     @test parse(LibPQ.ConninfoDisplay, "D") == LibPQ.Debug
     @test_throws LibPQ.Errors.JLConnectionError parse(LibPQ.ConninfoDisplay, "N")
+end
+
+@testset "Type map defaults" begin
+    type_map = LibPQ.PQTypeMap(Dict(:int2 => Int16))
+    calls = Ref(0)
+    default() = (calls[] += 1; :fallback)
+
+    for key in (21, LibPQ.Oid(21), :int2, "int2", SubString("_int2", 2))
+        @test get(type_map, key, nothing) === Int16
+        @test get(default, type_map, key) === Int16
+        @test get(Missing, type_map, key) === Int16
+    end
+    @test calls[] == 0
+
+    for key in (25, LibPQ.Oid(25), :text, "text", SubString("_text", 2))
+        @test get(type_map, key, :fallback) === :fallback
+        @test get(default, type_map, key) === :fallback
+        @test get(Missing, type_map, key) === missing
+    end
+    @test calls[] == 5
+    @test get(type_map, :text, nothing) === nothing
+    @test get(type_map, :text, missing) === missing
+    @test get(type_map, typemax(LibPQ.Oid), :fallback) === :fallback
+    @test_throws KeyError get(type_map, :unknown_postgresql_type, :fallback)
+    @test_throws KeyError get(default, type_map, :unknown_postgresql_type)
+    @test calls[] == 5
+    @test length(type_map) == 1
+    @test type_map[:int2] === Int16
 end
 
 @testset "Version Numbers" begin
@@ -1009,6 +1040,69 @@ end
             close(conn)
         end
 
+        @testset "Bounds of result values" begin
+            conn = LibPQ.Connection("dbname=postgres user=$DATABASE_USER"; throw_error=true)
+            try
+                for binary_format in (LibPQ.TEXT, LibPQ.BINARY), nonnull in (false, true)
+                    result = execute(
+                        conn,
+                        "SELECT 1::bigint AS value, NULL::bigint AS optional UNION ALL SELECT 2::bigint, NULL::bigint";
+                        binary_format=binary_format,
+                        not_null=nonnull ? [:value] : false,
+                    )
+                    row = first(result)
+                    values = LibPQ.Column(result, :value)
+                    optional = LibPQ.Column(result, :optional)
+                    try
+                        @test result[1, 1] === Int64(1)
+                        @test result[2, 1] === Int64(2)
+                        @test result[1, 2] === missing
+                        @test row.value === Int64(1)
+                        @test row.optional === missing
+                        @test values[2] === Int64(2)
+                        @test optional[2] === missing
+                        @test LibPQ.column_number(result, :absent) == 0
+                        @test_throws BoundsError row.absent
+                        for index in (-1, 0, 3, typemax(Int))
+                            @test_throws BoundsError result[index, 1]
+                            @test_throws BoundsError result[index, 2]
+                            @test_throws BoundsError LibPQ.Row(result, index).value
+                            @test_throws BoundsError values[index]
+                            @test_throws BoundsError optional[index]
+                            @test_throws BoundsError result[1, index]
+                            @test_throws BoundsError row[index]
+                        end
+                    finally
+                        close(result)
+                    end
+                    @test_throws BoundsError result[1, 1]
+                    @test_throws BoundsError row.value
+                    @test_throws BoundsError values[1]
+                end
+
+                for binary_format in (LibPQ.TEXT, LibPQ.BINARY)
+                    empty = execute(conn, "SELECT 1::bigint AS value WHERE FALSE"; binary_format=binary_format)
+                    try
+                        @test_throws BoundsError empty[1, 1]
+                        @test_throws BoundsError LibPQ.Row(empty, 1).value
+                        @test_throws BoundsError LibPQ.Column(empty, :value)[1]
+                    finally
+                        close(empty)
+                    end
+
+                    no_columns = execute(conn, "SELECT FROM generate_series(1, 2)"; binary_format=binary_format)
+                    try
+                        @test_throws BoundsError no_columns[1, 1]
+                        @test_throws BoundsError LibPQ.Row(no_columns, 1)[1]
+                    finally
+                        close(no_columns)
+                    end
+                end
+            finally
+                close(conn)
+            end
+        end
+
         @testset "Uppercase Columns" begin
             conn = LibPQ.Connection("dbname=postgres user=$DATABASE_USER"; throw_error=true)
 
@@ -1025,6 +1119,102 @@ end
 
             close(result)
             close(conn)
+        end
+
+        @testset "Row tables" begin
+            conn = LibPQ.Connection("dbname=postgres user=$DATABASE_USER"; throw_error=true)
+            uuid = UUID("6dc2b682-a411-a51f-ce9e-af63d1ef7c1a")
+            names = (:Column, Symbol("note μ"), :day, :uuid, :bytes)
+            try
+                for binary_format in (LibPQ.TEXT, LibPQ.BINARY), nonnull in (false, true), count in (0, 3)
+                    result = execute(
+                        conn,
+                        """
+                        SELECT n::bigint AS "Column",
+                               CASE WHEN n = 2 THEN NULL ELSE n::text END AS "note μ",
+                               DATE '2026-10-03' AS day,
+                               CASE WHEN n = 2 THEN NULL ELSE '$uuid'::uuid END AS uuid,
+                               CASE WHEN n = 2 THEN NULL ELSE decode('00ff', 'hex') END AS bytes
+                        FROM generate_series(1, $count) AS n
+                        """;
+                        binary_format=binary_format,
+                        type_map=Dict(:uuid => UUID),
+                        not_null=nonnull ? [:Column, :day] : false,
+                    )
+                    rows = nothing
+                    expected = [
+                        NamedTuple{names}((n, n == 2 ? missing : string(n), Date(2026, 10, 3), n == 2 ? missing : uuid, n == 2 ? missing : UInt8[0, 255]))
+                        for n in 1:count
+                    ]
+                    try
+                        rows = Tables.rowtable(result)
+                        types = Tuple{nonnull ? Int64 : Union{Int64, Missing}, Union{String, Missing}, nonnull ? Date : Union{Date, Missing}, Union{UUID, Missing}, Union{Vector{UInt8}, Missing}}
+                        @test length(rows) == count
+                        @test isequal(rows, expected)
+                        @test eltype(rows) === NamedTuple{names, types}
+                        @test isequal(rows, collect(Tables.namedtupleiterator(eltype(result), result)))
+                    finally
+                        close(result)
+                    end
+                    GC.gc()
+                    @test isequal(rows, expected)
+                end
+
+                for binary_format in (LibPQ.TEXT, LibPQ.BINARY), count in (0, 1, 3)
+                    result = execute(conn, "SELECT FROM generate_series(1, $count)"; binary_format=binary_format)
+                    try
+                        rows = Tables.rowtable(result)
+                        @test length(rows) == count
+                        @test rows == fill(NamedTuple(), count)
+                        @test eltype(rows) === typeof(NamedTuple())
+                    finally
+                        close(result)
+                    end
+                end
+
+                for binary_format in (LibPQ.TEXT, LibPQ.BINARY)
+                    calls = Ref(0)
+                    convert_byte = value -> begin
+                        calls[] += 1
+                        UInt8(parse(Int64, value))
+                    end
+                    result = execute(
+                        conn,
+                        "SELECT n::bigint AS value FROM generate_series(1, 3) AS n";
+                        binary_format=binary_format,
+                        column_types=[UInt8],
+                        conversions=Dict((:int8, UInt8) => convert_byte),
+                        not_null=true,
+                    )
+                    try
+                        rows = Tables.rowtable(result)
+                        @test rows == [(value=0x01,), (value=0x02,), (value=0x03,)]
+                        @test eltype(rows) === NamedTuple{(:value,), Tuple{UInt8}}
+                        @test calls[] == 3
+                    finally
+                        close(result)
+                    end
+                end
+
+                result = execute(
+                    conn,
+                    "SELECT n::bigint AS id, n::double precision AS score, (n % 2 = 0) AS flag, n::text AS note FROM generate_series(1, 512) AS n";
+                    binary_format=LibPQ.BINARY,
+                    not_null=true,
+                )
+                try
+                    rows = Tables.rowtable(result)
+                    @test length(rows) == 512
+                    @test rows[end] == (id=512, score=512.0, flag=true, note="512")
+                    # Keep row materialization from allocating boxed metadata for every cell.
+                    allocated = @allocated Tables.rowtable(result)
+                    @test allocated < 512 * 512
+                finally
+                    close(result)
+                end
+            finally
+                close(conn)
+            end
         end
 
         @testset "PQResultError" begin
@@ -1168,9 +1358,234 @@ end
 
             @testset "Parsing" begin
 
-                binary_not_implemented_pgtypes = ["numeric", "numrange"]
+                @testset "bytea payloads are independent of their result" begin
+                    conn = LibPQ.Connection("dbname=postgres user=$DATABASE_USER"; throw_error=true)
+                    try
+                        for binary_format in (LibPQ.TEXT, LibPQ.BINARY), data in (UInt8[], UInt8[0], UInt8[0, 39, 92, 255], UInt8.(0:255))
+                            result = execute(
+                                conn,
+                                "SELECT \$1::bytea AS bytes, NULL::bytea AS absent",
+                                [string(raw"\x", bytes2hex(data))];
+                                binary_format=binary_format,
+                            )
+                            parsed = nothing
+                            owns_data = false
+                            try
+                                row = first(Tables.rows(result))
+                                parsed = row.bytes
+                                @test parsed == data
+                                @test row.absent === missing
+                                owns_data = isempty(data) || pointer(parsed) != LibPQ.data_pointer(LibPQ.PQValue(result, 1, 1))
+                                @test owns_data
+                            finally
+                                close(result)
+                            end
+                            owns_data && @test parsed == data
+                        end
+                    finally
+                        close(conn)
+                    end
+                end
+
+                @testset "UUID conversion is opt-in" begin
+                    conn = LibPQ.Connection("dbname=postgres user=$DATABASE_USER"; throw_error=true)
+                    values = (
+                        UUID(UInt128(0)),
+                        UUID(typemax(UInt128)),
+                        UUID("00112233-4455-6677-8899-aabbccddeeff"),
+                        UUID("6dc2b682-a411-a51f-ce9e-af63d1ef7c1a"),
+                    )
+                    query = "SELECT \$1::uuid AS value, NULL::uuid AS absent"
+                    try
+                        for binary_format in (LibPQ.TEXT, LibPQ.BINARY), value in values
+                            result = execute(conn, query, [value]; binary_format=binary_format)
+                            try
+                                row = first(Tables.rows(result))
+                                @test row.value isa String
+                                expected = binary_format ? String(hex2bytes(replace(string(value), "-" => ""))) : string(value)
+                                @test row.value == expected
+                                @test row.absent === missing
+                            finally
+                                close(result)
+                            end
+                            result = execute(conn, query, [value]; binary_format=binary_format, type_map=Dict(:uuid => UUID))
+                            parsed = nothing
+                            try
+                                row = first(Tables.rows(result))
+                                parsed = row.value
+                                @test parsed == value
+                                @test row.absent === missing
+                            finally
+                                close(result)
+                            end
+                            @test parsed == value
+                        end
+                        for (parameter, expected) in (
+                            ("{}", Union{UUID,Missing}[]),
+                            ("{$(values[3]),NULL}", Union{UUID,Missing}[values[3], missing]),
+                            ("{{$(values[3]),NULL},{$(values[1]),$(values[2])}}", Union{UUID,Missing}[values[3] missing; values[1] values[2]]),
+                            ("[0:1]={$(values[3]),NULL}", OffsetArray(Union{UUID,Missing}[values[3], missing], 0:1)),
+                        )
+                            result = execute(conn, "SELECT \$1::uuid[] AS value", [parameter])
+                            try
+                                @test only(Tables.columntable(result).value) == parameter
+                            finally
+                                close(result)
+                            end
+                            result = execute(conn, "SELECT \$1::uuid[] AS value", [parameter]; type_map=Dict(:_uuid => AbstractArray{Union{UUID,Missing}}))
+                            try
+                                parsed = only(Tables.columntable(result).value)
+                                @test isequal(parsed, expected)
+                                @test axes(parsed) == axes(expected)
+                                @test eltype(parsed) == Union{UUID,Missing}
+                            finally
+                                close(result)
+                            end
+                        end
+                    finally
+                        close(conn)
+                    end
+                end
+
+                @testset "Text array conversion is opt-in" begin
+                    conn = LibPQ.Connection("dbname=postgres user=$DATABASE_USER"; throw_error=true)
+                    T = Union{String,Missing}
+                    values = T["plain", "", "NULL", "null", "a,b", "{braces}", "a\"b", "a\\b", " a ", "line\nfeed", "a\tb", "x=y", "[2:3]=value", "λ🍋", missing]
+                    placeholders = join(("\$$(i)::text" for i in eachindex(values)), ",")
+                    query = "SELECT \$1::text[] AS value, NULL::text[] AS absent"
+                    cases = (
+                        ("SELECT ARRAY[]::text[] AS value, NULL::text[] AS absent", String[], T[]),
+                        ("SELECT ARRAY[$placeholders] AS value, NULL::text[] AS absent", values, values),
+                        (query, [raw"{{a,NULL},{\"b,c\",\"{d}\"}}"], T["a" missing; "b,c" "{d}"]),
+                        (query, ["{{{a,b},{c,d}}}"], reshape(T["a" "b"; "c" "d"], 1, 2, 2)),
+                        (query, ["[0:1]={zero,NULL}"], OffsetArray(T["zero", missing], 0:1)),
+                        (query, ["[0:1][-2:-1]={{a,b},{c,d}}"], OffsetArray(T["a" "b"; "c" "d"], 0:1, -2:-1)),
+                    )
+                    try
+                        for (query, parameters, expected) in cases
+                            result = execute(conn, query, parameters)
+                            try
+                                @test result[1, 1] isa String
+                                @test result[1, 2] === missing
+                            finally
+                                close(result)
+                            end
+                            result = execute(conn, query, parameters; type_map=Dict(:_text => AbstractArray{T}))
+                            parsed = nothing
+                            try
+                                parsed = result[1, 1]
+                                @test isequal(parsed, expected)
+                                @test axes(parsed) == axes(expected)
+                                @test eltype(parsed) == T
+                                @test result[1, 2] === missing
+                            finally
+                                close(result)
+                            end
+                            @test isequal(parsed, expected)
+                        end
+                        result = execute(conn, "SELECT ARRAY['a,b', '']::varchar[] AS value"; column_types=Dict(:value => Vector{String}))
+                        try
+                            @test result[1, 1] == ["a,b", ""]
+                            @test eltype(result[1, 1]) == String
+                        finally
+                            close(result)
+                        end
+                        @test LibPQ.pqparse(Vector{String}, "{}") == String[]
+                        @test_throws MethodError LibPQ.pqparse(Vector{String}, "{NULL}")
+                        @test_throws ArgumentError LibPQ.pqparse(Vector{String}, "{\"unterminated}")
+                        @test_throws ArgumentError LibPQ.pqparse(AbstractArray{T}, "[0:2]={a,b}")
+                    finally
+                        close(conn)
+                    end
+                end
+
+                @testset "Binary numeric conversion" begin
+                    conn = LibPQ.Connection("dbname=postgres user=$DATABASE_USER"; throw_error=true)
+                    inputs = (
+                        "0", "0.0000", "-0.0000", "1", "-12345", "12.34567",
+                        "0.12340", "0.012340", "0.0012340", "0.00012340",
+                        "0.00001230", "100000000.0000", "1e1000", "1e-1000",
+                        "1234567890123456789012345678901234567890.0123456789",
+                        "-0.50000000000000000001",
+                    )
+                    query = "SELECT \$1::numeric AS value, NULL::numeric AS absent"
+                    try
+                        for input in inputs
+                            text = execute(conn, query, [input])
+                            binary = execute(conn, query, [input]; binary_format=true)
+                            parsed = expected = nothing
+                            try
+                                expected = text[1, 1]
+                                parsed = binary[1, 1]
+                                @test parsed isa Decimal
+                                @test isequal(parsed, expected)
+                                @test string(parsed) == string(expected)
+                                @test binary[1, 2] === missing
+                            finally
+                                close(text)
+                                close(binary)
+                            end
+                            @test isequal(parsed, expected)
+                        end
+
+                        for input in ("NaN", "Infinity", "-Infinity"), binary_format in (false, true)
+                            result = execute(conn, query, [input]; binary_format=binary_format)
+                            try
+                                @test_throws ArgumentError result[1, 1]
+                            finally
+                                close(result)
+                            end
+                            result = execute(conn, query, [input]; binary_format=binary_format, type_map=Dict(:numeric => Float64))
+                            try
+                                @test isequal(result[1, 1], parse(Float64, input))
+                            finally
+                                close(result)
+                            end
+                        end
+
+                        for (input, typ) in (
+                            ("1.000000000000000111022302462515654042363166809082031250000000000000000000001", Float64),
+                            (repeat("1234567890", 40), BigInt),
+                        )
+                            result = execute(conn, query, [input]; binary_format=true, column_types=Dict(:value => typ))
+                            try
+                                @test result[1, 1] == parse(typ, input)
+                                @test result[1, 1] isa typ
+                            finally
+                                close(result)
+                            end
+                        end
+
+                        statement = prepare(conn, query)
+                        result = execute(statement, ["12.3456700"]; binary_format=true)
+                        try
+                            @test isequal(result[1, 1], parse(Decimal, "12.3456700"))
+                        finally
+                            close(result)
+                        end
+                        result = fetch(async_execute(conn, query, ["-0.00001230"]; binary_format=true))
+                        try
+                            @test isequal(result[1, 1], parse(Decimal, "-0.00001230"))
+                        finally
+                            close(result)
+                        end
+
+                        for payload in ("", "000000000000", "0001000000000000", "0000000000010000", "0000000000004000", "00010000000000002710", "00000000000000000000")
+                            result = execute(conn, "SELECT \$1::bytea", [raw"\x" * payload]; binary_format=true)
+                            try
+                                value = LibPQ.PQValue{LibPQ.oid(:numeric)}(result, 1, 1)
+                                @test_throws ArgumentError parse(Decimal, value)
+                            finally
+                                close(result)
+                            end
+                        end
+                    finally
+                        close(conn)
+                    end
+                end
+
+                binary_not_implemented_pgtypes = ["numrange"]
                 binary_not_implemented_types = [
-                    Decimal,
                     Time,
                     Array,
                     OffsetArray,
@@ -1188,8 +1603,8 @@ end
                             ("3::float8", Float64(3)),
                             ("3::float4", Float32(3)),
                             ("3::oid", LibPQ.Oid(3)),
-                            ("3::numeric", decimal("3")),
-                            ("$(BigFloat(pi))::numeric", decimal(BigFloat(pi))),
+                            ("3::numeric", parse(Decimal, "3")),
+                            ("$(string(Decimal(BigFloat(pi))))::numeric", Decimal(BigFloat(pi))),
                             ("$(big"4608230166434464229556241992703")::numeric", parse(Decimal, "4608230166434464229556241992703")),
                             ("E'\\\\xDEADBEEF'::bytea", hex2bytes("DEADBEEF")),
                             ("E'\\\\000'::bytea", UInt8[0o000]),
@@ -1250,6 +1665,14 @@ end
                             ("INTERVAL '6.001 seconds'", Dates.CompoundPeriod(Period[Second(6), Millisecond(1)])),
                             ("INTERVAL '6.0001 seconds'", Dates.CompoundPeriod(Period[Second(6), Microsecond(100)])),
                             ("INTERVAL '6.1001 seconds'", Dates.CompoundPeriod(Period[Second(6), Microsecond(100100)])),
+                            ("INTERVAL '-6.1 seconds'", Dates.CompoundPeriod(Period[Second(-6), Millisecond(-100)])),
+                            ("INTERVAL '-6.01 seconds'", Dates.CompoundPeriod(Period[Second(-6), Millisecond(-10)])),
+                            ("INTERVAL '-6.001 seconds'", Dates.CompoundPeriod(Period[Second(-6), Millisecond(-1)])),
+                            ("INTERVAL '-6.0001 seconds'", Dates.CompoundPeriod(Period[Second(-6), Microsecond(-100)])),
+                            ("INTERVAL '-6.1001 seconds'", Dates.CompoundPeriod(Period[Second(-6), Microsecond(-100100)])),
+                            ("INTERVAL '-0.1 seconds'", Dates.CompoundPeriod(Period[Millisecond(-100)])),
+                            ("INTERVAL '-0.000001 seconds'", Dates.CompoundPeriod(Period[Microsecond(-1)])),
+                            ("INTERVAL '1 day -0.1 seconds'", Dates.CompoundPeriod(Period[Day(1), Millisecond(-100)])),
                             ("INTERVAL '1000 years 7 weeks'", Dates.CompoundPeriod(Period[Year(1000), Day(7 * 7)])),
                             ("INTERVAL '1 day -1 hour'", Dates.CompoundPeriod(Period[Day(1), Hour(-1)])),
                             ("INTERVAL '-1 month 1 day'", Dates.CompoundPeriod(Period[Month(-1), Day(1)])),
@@ -1258,6 +1681,8 @@ end
                             # With precision
                             ("INTERVAL '6.1001 seconds' SECOND(0)", Dates.CompoundPeriod(Period[Second(6)])),
                             ("INTERVAL '6.1001 seconds' SECOND(2)", Dates.CompoundPeriod(Period[Second(6), Millisecond(100)])),
+                            ("INTERVAL '-6.1001 seconds' SECOND(0)", Dates.CompoundPeriod(Period[Second(-6)])),
+                            ("INTERVAL '-6.1001 seconds' SECOND(2)", Dates.CompoundPeriod(Period[Second(-6), Millisecond(-100)])),
                             ("'{{{1,2,3},{4,5,6}}}'::int2[]", Array{Union{Int16, Missing}}(reshape(Int16[1 2 3; 4 5 6], 1, 2, 3))),
                             ("'{}'::int2[]", Union{Missing, Int16}[]),
                             ("'{{{1,2,3},{4,5,6}}}'::int4[]", Array{Union{Int32, Missing}}(reshape(Int32[1 2 3; 4 5 6], 1, 2, 3))),
@@ -1283,7 +1708,7 @@ end
                             ("'(3,7)'::int8range", Interval{Int64, Closed, Open}(4, 7)),
                             ("'[4,4]'::int8range", Interval{Int64, Closed, Open}(4, 5)),
                             ("'[4,4)'::int8range", Interval{Int64}()),  # Empty interval
-                            ("'[11.1,22.2)'::numrange", Interval{Decimal, Closed, Open}(11.1, 22.2)),
+                            ("'[11.1,22.2)'::numrange", Interval{Decimal, Closed, Open}(parse(Decimal, "11.1"), parse(Decimal, "22.2"))), # dec"11.1" requires Decimals 0.5
                             ("'[2010-01-01 14:30, 2010-01-01 15:30)'::tsrange", Interval{Closed, Open}(DateTime(2010, 1, 1, 14, 30), DateTime(2010, 1, 1, 15, 30))),
                             ("'[2010-01-01 14:30-00, 2010-01-01 15:30-00)'::tstzrange", Interval{Closed, Open}(ZonedDateTime(2010, 1, 1, 14, 30, tz"UTC"), ZonedDateTime(2010, 1, 1, 15, 30, tz"UTC"))),
                             ("'[2004-10-19 10:23:54-02, 2004-10-19 11:23:54-02)'::tstzrange", Interval{Closed, Open}(ZonedDateTime(2004, 10, 19, 12, 23, 54, tz"UTC"), ZonedDateTime(2004, 10, 19, 13, 23, 54, tz"UTC"))),
@@ -1317,7 +1742,7 @@ end
 
                                 oid = LibPQ.column_oids(result)[1]
                                 func = result.column_funcs[1]
-                                if binary_format && (
+                                if binary_format && oid != LibPQ.oid(:bytea) && (
                                     any(T -> data isa T, binary_not_implemented_types) ||
                                     any(occursin.(binary_not_implemented_pgtypes, test_str))
                                 )
@@ -1448,11 +1873,38 @@ end
                         @test match(regex, input) !== nothing
                     end
                 end
+
+                @testset "Signed fractional interval periods" begin
+                    tests = (
+                        ("PT-0.1S", Dates.CompoundPeriod(Millisecond(-100))),
+                        ("PT-0.0001S", Dates.CompoundPeriod(Microsecond(-100))),
+                        ("PT-0.000000001S", Dates.CompoundPeriod(Nanosecond(-1))),
+                        ("PT-6.1S", Dates.CompoundPeriod(Second(-6), Millisecond(-100))),
+                        ("P1DT-0.1S", Dates.CompoundPeriod(Day(1), Millisecond(-100))),
+                        ("PT-0.000000000S", Dates.CompoundPeriod()),
+                        ("PT0.000000001S", Dates.CompoundPeriod(Nanosecond(1))),
+                    )
+                    for (input, expected) in tests
+                        @test LibPQ.pqparse(Dates.CompoundPeriod, input) == expected
+                    end
+                end
             end
         end
 
         @testset "Parameters" begin
             conn = LibPQ.Connection("dbname=postgres user=$DATABASE_USER"; throw_error=true)
+
+            @testset "UUID" begin
+                tests = (
+                    ("'6dc2b682-a411-a51f-ce9e-af63d1ef7c1a'::uuid", UUID("6dc2b682-a411-a51f-ce9e-af63d1ef7c1a")),
+                )
+
+                @testset for (pg_str, obj) in tests
+                    result = execute(conn, "SELECT $pg_str = \$1", [obj])
+                    @test first(first(result))
+                    close(result)
+                end
+            end
 
             @testset "Arrays" begin
                 tests = (
@@ -1466,7 +1918,8 @@ end
                     ("SELECT 'f\\\"oo' = ANY(\$1)", [["b\\\"ar", "f\\\"oo"]]),
                     ("SELECT 'f\"\\oo' = ANY(\$1)", [["b\"\\ar", "f\"\\oo"]]),
                     ("SELECT ARRAY[1, 2] = \$1", [[1, 2]]),
-                    ("SELECT ARRAY[1, 2] = \$1", Any[Any[1, 2]])
+                    ("SELECT ARRAY[1, 2] = \$1", Any[Any[1, 2]]),
+                    ("SELECT '{6dc2b682-a411-a51f-ce9e-af63d1ef7c1a}'::uuid[] = \$1", [[UUID("6dc2b682-a411-a51f-ce9e-af63d1ef7c1a")]]),
                 )
 
                 @testset for (query, arr) in tests
@@ -1493,7 +1946,7 @@ end
                 tests = (
                     ("'[3, 7)'::int4range", Interval{Int32, Closed, Open}(3, 7)),
                     ("'[4, 4]'::int4range", Interval{Int32, Closed, Closed}(4, 4)),
-                    ("'[11.1, 22.2]'::numrange", Interval{Decimal, Closed, Closed}(11.1, 22.2)),
+                    ("'[11.1, 22.2]'::numrange", Interval{Decimal, Closed, Closed}(parse(Decimal, "11.1"), parse(Decimal, "22.2"))), # dec"11.1" requires Decimals 0.5
                     ("'[2010-01-01T14:30:00, 2010-01-01T15:30:00)'::tsrange", Interval{Closed, Open}(DateTime(2010, 1, 1, 14, 30), DateTime(2010, 1, 1, 15, 30))),
                     ("'[2010-01-01T14:30:00+00:00, 2010-01-01T15:30:00+00:00)'::tstzrange", Interval{Closed, Open}(ZonedDateTime(2010, 1, 1, 14, 30, tz"UTC"), ZonedDateTime(2010, 1, 1, 15, 30, tz"UTC"))),
                     ("'[2010-01-01T14:30:00-02:00, 2010-01-01T15:30:00-02:00)'::tstzrange", Interval{Closed, Open}(ZonedDateTime(2010, 1, 1, 14, 30, tz"UTC-2"), ZonedDateTime(2010, 1, 1, 15, 30, tz"UTC-2"))),
@@ -1751,6 +2204,39 @@ end
     @testset "AsyncResults" begin
         trywait(ar::LibPQ.AsyncResult) = (try wait(ar) catch end; nothing)
 
+        @testset "Lazy debug messages" begin
+            conn = LibPQ.Connection("dbname=postgres user=$DATABASE_USER"; throw_error=true)
+            function query_value()
+                result = fetch(async_execute(conn, "SELECT 1; SELECT 2;"))
+                try
+                    return result[1, 1]
+                finally
+                    close(result)
+                end
+            end
+
+            @test query_value() == 2
+            query_value()
+            @test (@allocated query_value()) < 128 * 1024
+            try
+                for message in (
+                    "Checking the result from connection",
+                    "Saving result 1 from connection",
+                    "Saving result 2 from connection",
+                    "Finished reading from connection",
+                )
+                    @test 2 == @test_logs(
+                        (:debug, Regex(message)),
+                        min_level=Logging.Debug,
+                        match_mode=:any,
+                        query_value(),
+                    )
+                end
+            finally
+                close(conn)
+            end
+        end
+
         @testset "Basic" begin
             conn = LibPQ.Connection("dbname=postgres user=$DATABASE_USER"; throw_error=true)
 
@@ -1956,6 +2442,73 @@ end
             DBInterface.close!(conn)
             @test !isopen(conn.conn)
 
+        end
+
+        if isdefined(DBInterface, :transaction)
+            @testset "DBInterface transactions" begin
+                conn = DBInterface.connect(LibPQ.Connection, "dbname=postgres user=$DATABASE_USER")
+                function scalar(sql)
+                    result = DBInterface.execute(conn, sql)
+                    try
+                        return only(columntable(result).n)
+                    finally
+                        close(result)
+                    end
+                end
+                close(DBInterface.execute(conn, "CREATE TEMPORARY TABLE transaction_rows (n integer)"))
+                prepared_before = scalar("SELECT count(*) AS n FROM pg_prepared_statements")
+
+                @test DBInterface.transaction(conn) do
+                    close(DBInterface.execute(conn, "INSERT INTO transaction_rows VALUES (1)"))
+                    :committed
+                end === :committed
+                @test scalar("SELECT count(*) AS n FROM transaction_rows") == 1
+
+                result = DBInterface.transaction(conn) do
+                    DBInterface.execute(conn, "SELECT n FROM transaction_rows")
+                end
+                @test isopen(result)
+                @test only(columntable(result).n) == 1
+                close(result)
+
+                abort = ErrorException("abort transaction")
+                error = try
+                    DBInterface.transaction(conn) do
+                        close(DBInterface.execute(conn, "INSERT INTO transaction_rows VALUES (2)"))
+                        throw(abort)
+                    end
+                catch err
+                    err
+                end
+                @test error === abort
+                @test scalar("SELECT count(*) AS n FROM transaction_rows") == 1
+
+                @test_throws LibPQ.Errors.UndefinedTable DBInterface.transaction(conn) do
+                    DBInterface.execute(conn, "SELECT * FROM nonexistent_transaction_table")
+                end
+                @test scalar("SELECT count(*) AS n FROM transaction_rows") == 1
+                for _ in 1:20
+                    @test DBInterface.transaction(() -> 42, conn) == 42
+                end
+                @test scalar("SELECT count(*) AS n FROM pg_prepared_statements") == prepared_before
+                DBInterface.close!(conn)
+
+                conn = DBInterface.connect(LibPQ.Connection, "dbname=postgres user=$DATABASE_USER")
+                error = try
+                    DBInterface.transaction(conn) do
+                        DBInterface.close!(conn)
+                        throw(abort)
+                    end
+                catch err
+                    err
+                end
+                @test error isa CompositeException
+                if error isa CompositeException
+                    @test length(error.exceptions) == 2
+                    @test error.exceptions[1].ex === abort
+                    @test error.exceptions[2].ex isa LibPQ.Errors.PostgreSQLException
+                end
+            end
         end
     end
 end

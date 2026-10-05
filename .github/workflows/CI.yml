@@ -15,6 +15,9 @@ jobs:
   test:
     name: Julia ${{ matrix.version }} - PostgreSQL ${{ matrix.postgresql-version }} - ${{ matrix.os }} - ${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -31,33 +34,26 @@ jobs:
         macos-postgresql-path:
           - /opt/homebrew/opt/postgresql
         include:
-          # Add a LTS job just to make sure we still support it
+          # Check the minimum Julia version declared in Project.toml (also the LTS).
+          # Also use the oldest supported PostgreSQL version since we'll use `latest` everywhere else.
           - os: ubuntu-latest
             version: "1.10"
             arch: x64
-            postgresql-version: latest
-          # Add older supported PostgreSQL Versions
+            postgresql-version: '14'
           - os: ubuntu-latest
             version: 1
             arch: x64
-            postgresql-version: '13'
-          - os: ubuntu-latest
-            version: 1
-            arch: x64
-            postgresql-version: '12'
-          - os: ubuntu-latest
-            version: 1
-            arch: x64
-            postgresql-version: '11'
-          - os: ubuntu-latest
-            version: 1
-            arch: x64
-            postgresql-version: '10'
+            postgresql-version: 'latest'
           - os: macOS-latest
             version: 1
             arch: aarch64
-            postgresql-version: '17'
+            postgresql-version: '18'
             macos-postgresql-path: /opt/homebrew/var/postgresql
+          - os: macos-26-intel
+            version: 1
+            arch: x64
+            postgresql-version: '18'
+            macos-postgresql-path: /usr/local/var/postgresql
     steps:
       - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3
@@ -113,12 +109,17 @@ jobs:
         if: ${{ runner.os == 'Windows' }}
       # Run Tests
       - run: psql -c '\conninfo'
+      - name: Test minimum supported Decimals
+        if: ${{ matrix.version == '1.10' }}
+        run: |
+          julia --project=. -e 'using Pkg; Pkg.add(PackageSpec(name="Decimals", version="0.4.1")); Pkg.pin("Decimals")'
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
       - uses: julia-actions/julia-processcoverage@v1
       - uses: codecov/codecov-action@v7
         with:
           files: lcov.info
+          use_oidc: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
 
   docs:
     name: Documentation
@@ -164,7 +165,7 @@ jobs:
         with:
           version: '1'
       - name: Install Julia packages
-        run: julia -e 'using Pkg; Pkg.add(["EzXML", "HTTP"]);'
+        run: julia -e 'using Pkg; Pkg.add(["EzXML", "HTTP", "OrderedCollections"]);'
       - name: Generate error codes
         run: julia deps/error_codes.jl error_codes_generated.jl
       - name: Compare error codes

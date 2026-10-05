@@ -17,11 +17,9 @@ end
 
 ## From Julia to PostgreSQL
 
-Currently all types are printed to strings and given to LibPQ as such, with no special treatment.
-Expect this to change in a future release.
-For now, you can convert the data to strings yourself before passing to [`execute`](@ref).
-This should only be necessary for data types whose Julia string representation is not valid in
-PostgreSQL, such as arrays.
+Parameters are sent in PostgreSQL text format. Values are converted to their string
+representation, with specialized conversion for arrays and intervals. Vectors become
+PostgreSQL array literals. You can also provide the PostgreSQL text representation yourself.
 
 ```jldoctest
 julia> A = collect(12:15);
@@ -30,6 +28,20 @@ julia> nt = columntable(execute(conn, "SELECT \$1 = ANY(\$2) AS result", Any[13,
 
 julia> nt[:result][1]
 true
+```
+
+For a `bytea` parameter, encode the bytes in PostgreSQL's hexadecimal text format.
+A `Vector{UInt8}` is otherwise converted to an array literal such as `{1,2,3,4}`, whose
+characters PostgreSQL then stores as bytes. The `binary_format` keyword selects the
+result format; parameters still use text format.
+
+```jldoctest
+julia> bytes = UInt8[1, 2, 3, 4];
+
+julia> parameter = string(raw"\x", bytes2hex(bytes));
+
+julia> bytes2hex(columntable(execute(conn, "SELECT \$1::bytea AS data", [parameter]))[:data][1])
+"01020304"
 ```
 
 ## From PostgreSQL to Julia
@@ -96,6 +108,67 @@ Query-level overrides will override connection-level overrides.
 To override behaviour for every query everywhere, add mappings to the global constants
 [`LibPQ.LIBPQ_TYPE_MAP`](@ref) and [`LibPQ.LIBPQ_CONVERSIONS`](@ref).
 Connection-level overrides will override these global overrides.
+
+### UUID values
+
+UUID columns keep the default `String` conversion. To return Julia UUID values,
+set `type_map=Dict(:uuid => UUID)` on the connection or query. This works with
+both text and binary results.
+
+```jldoctest
+julia> using UUIDs: UUID
+
+julia> result = execute(conn, "SELECT '00112233-4455-6677-8899-aabbccddeeff'::uuid AS id"; binary_format=true, type_map=Dict(:uuid => UUID));
+
+julia> first(columntable(result).id)
+UUID("00112233-4455-6677-8899-aabbccddeeff")
+
+julia> close(result)
+```
+
+For UUID arrays in text results, set
+`type_map=Dict(:_uuid => AbstractArray{Union{UUID,Missing}})` to preserve dimensions,
+index offsets, and NULL elements. Binary UUID arrays are not currently supported.
+
+### Text arrays
+
+Text-array columns keep the default `String` conversion. To decode `text[]` values,
+set `type_map=Dict(:_text => AbstractArray{Union{String,Missing}})` on the connection
+or query. Use `:_varchar` for `varchar[]` columns.
+
+```jldoctest
+julia> result = execute(conn, "SELECT ARRAY['a,b', 'NULL', NULL]::text[] AS value"; type_map=Dict(:_text => AbstractArray{Union{String,Missing}}));
+
+julia> isequal(first(columntable(result).value), Union{String,Missing}["a,b", "NULL", missing])
+true
+
+julia> close(result)
+```
+
+The conversion preserves dimensions, index offsets, empty strings, and escaped
+characters. Unquoted `NULL` elements become `missing`; quoted `"NULL"` remains a
+string. Use `AbstractArray{String}` when the array cannot contain NULL elements.
+Binary text arrays are not currently supported.
+
+### NUMERIC values
+
+Scalar `NUMERIC` columns return `Decimals.Decimal` values in both text and binary
+result formats, preserving exact decimal values. The selected Julia type applies
+the same parsing rules as text results.
+
+```jldoctest
+julia> result = execute(conn, "SELECT 12.34567::numeric AS value"; binary_format=true);
+
+julia> string(first(columntable(result).value))
+"12.34567"
+
+julia> close(result)
+```
+
+`Decimal` cannot represent NaN or infinities and rejects those values in either
+format. Use a type override such as `type_map=Dict(:numeric => Float64)` when
+floating-point values are appropriate; this can round finite decimal values.
+Binary `NUMERIC` arrays and `numrange` values are not currently supported.
 
 ### Implementation
 
