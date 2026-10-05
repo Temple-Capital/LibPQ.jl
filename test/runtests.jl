@@ -1656,7 +1656,8 @@ end
                             ("'infinity'::date", typemax(Date)),
                             ("'-infinity'::date", typemin(Date)),
                             ("TIME '13:13:13.131'", Time(13, 13, 13, 131)),
-                            ("TIME '13:13:13.131242'", Time(13, 13, 13, 131)),
+                            # Dates parses sub-millisecond `Time` since JuliaLang/julia#62994
+                            ("TIME '13:13:13.131242'", isdefined(Dates, :Timestamp) ? Time(13, 13, 13, 131, 242) : Time(13, 13, 13, 131)),
                             ("TIME '01:01:01'", Time(1, 1, 1)),
                             ("'allballs'::time", Time(0, 0, 0)),
                             ("INTERVAL '1 year 2 months 3 days 4 hours 5 minutes 6 seconds'", Dates.CompoundPeriod(Period[Year(1), Month(2), Day(3), Hour(4), Minute(5), Second(6)])),
