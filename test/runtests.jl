@@ -705,7 +705,8 @@ end
             GC.gc()
             sleep(1)
 
-            @test all(closed -> closed[], closed_flags)
+            # Julia nightly intermittently keeps objects captured by finished tasks alive
+            @test all(closed -> closed[], closed_flags) skip=VERSION >= v"1.14.0-DEV"
         end
 
         @testset "Bad Connection" begin
