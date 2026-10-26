@@ -8,3 +8,9 @@ updates:
       github-actions:
         patterns:
           - "*"
+  - package-ecosystem: "julia"
+    directories:
+      - "/"
+      - "/docs"
+    schedule:
+      interval: "weekly"
